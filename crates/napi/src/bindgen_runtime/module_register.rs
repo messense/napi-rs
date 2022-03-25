@@ -9,6 +9,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{atomic::Ordering, Mutex};
 
 use lazy_static::lazy_static;
+use thread_local::ThreadLocal;
 
 use crate::{
   check_status, check_status_or_throw, sys, Env, JsError, JsFunction, Property, Result, Value,
@@ -94,6 +95,8 @@ lazy_static! {
   static ref MODULE_CLASS_PROPERTIES: ModuleClassProperty = Default::default();
   static ref MODULE_REGISTER_LOCK: Mutex<()> = Mutex::new(());
   static ref REGISTERED: AtomicBool = AtomicBool::new(false);
+  static ref FN_REGISTER_MAP: ThreadLocal<RefCell<HashMap<ExportRegisterCallback, (sys::napi_callback, String)>>> =
+    Default::default();
 }
 
 #[inline]
@@ -114,7 +117,6 @@ thread_local! {
     /* export name */ String,
     /* constructor */ sys::napi_ref,
   >> = Default::default();
-  static FN_REGISTER_MAP: RefCell<HashMap<ExportRegisterCallback, (sys::napi_callback, String)>> = Default::default();
 }
 
 #[doc(hidden)]
@@ -148,9 +150,10 @@ pub fn register_js_function(
   cb: ExportRegisterCallback,
   c_fn: sys::napi_callback,
 ) {
-  FN_REGISTER_MAP.with(|inner| {
-    inner.borrow_mut().insert(cb, (c_fn, name.to_owned()));
-  });
+  FN_REGISTER_MAP
+    .get_or_default()
+    .borrow_mut()
+    .insert(cb, (c_fn, name.to_owned()));
 }
 
 #[doc(hidden)]
@@ -188,11 +191,10 @@ pub fn register_class(
 ///
 pub fn get_js_function(env: &Env, raw_fn: ExportRegisterCallback) -> Result<JsFunction> {
   wait_first_thread_registered();
-  FN_REGISTER_MAP.with(|inner| {
-    inner
-      .borrow()
-      .get(&raw_fn)
-      .and_then(|(cb, name)| {
+  FN_REGISTER_MAP
+    .get()
+    .and_then(|inner| {
+      inner.borrow().get(&raw_fn).and_then(|(cb, name)| {
         let mut function = ptr::null_mut();
         let name_len = name.len() - 1;
         let fn_name = unsafe { CStr::from_bytes_with_nul_unchecked(name.as_bytes()) };
@@ -213,13 +215,13 @@ pub fn get_js_function(env: &Env, raw_fn: ExportRegisterCallback) -> Result<JsFu
           value_type: ValueType::Function,
         }))
       })
-      .ok_or_else(|| {
-        crate::Error::new(
-          crate::Status::InvalidArg,
-          "JavaScript function does not exist".to_owned(),
-        )
-      })
-  })
+    })
+    .ok_or_else(|| {
+      crate::Error::new(
+        crate::Status::InvalidArg,
+        "JavaScript function does not exist".to_owned(),
+      )
+    })
 }
 
 /// Get `C Callback` from defined Rust `fn`
@@ -243,18 +245,15 @@ pub fn get_js_function(env: &Env, raw_fn: ExportRegisterCallback) -> Result<JsFu
 ///
 pub fn get_c_callback(raw_fn: ExportRegisterCallback) -> Result<crate::Callback> {
   wait_first_thread_registered();
-  FN_REGISTER_MAP.with(|inner| {
-    inner
-      .borrow()
-      .get(&raw_fn)
-      .and_then(|(cb, _name)| *cb)
-      .ok_or_else(|| {
-        crate::Error::new(
-          crate::Status::InvalidArg,
-          "JavaScript function does not exist".to_owned(),
-        )
-      })
-  })
+  FN_REGISTER_MAP
+    .get()
+    .and_then(|inner| inner.borrow().get(&raw_fn).and_then(|(cb, _name)| *cb))
+    .ok_or_else(|| {
+      crate::Error::new(
+        crate::Status::InvalidArg,
+        "JavaScript function does not exist".to_owned(),
+      )
+    })
 }
 
 #[no_mangle]

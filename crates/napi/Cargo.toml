@@ -50,6 +50,7 @@ tokio_time = ["tokio/time"]
 ctor = "0.1"
 lazy_static = "1"
 napi-sys = { version = "2.1.0", path = "../sys" }
+thread_local = "1.1.4"
 
 [dependencies.encoding_rs]
 optional = true
