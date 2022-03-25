@@ -90,6 +90,11 @@ type ModuleClassProperty = PersistedSingleThreadHashMap<
 unsafe impl<K, V> Send for PersistedSingleThreadHashMap<K, V> {}
 unsafe impl<K, V> Sync for PersistedSingleThreadHashMap<K, V> {}
 
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct NapiRef(sys::napi_ref);
+unsafe impl Send for NapiRef {}
+
 lazy_static! {
   static ref MODULE_REGISTER_CALLBACK: ModuleRegisterCallback = Default::default();
   static ref MODULE_CLASS_PROPERTIES: ModuleClassProperty = Default::default();
@@ -97,6 +102,10 @@ lazy_static! {
   static ref REGISTERED: AtomicBool = AtomicBool::new(false);
   static ref FN_REGISTER_MAP: ThreadLocal<RefCell<HashMap<ExportRegisterCallback, (sys::napi_callback, String)>>> =
     Default::default();
+  static ref REGISTERED_CLASSES: ThreadLocal<RefCell<HashMap<
+    /* export name */ String,
+    /* constructor */ NapiRef,
+  >>> = Default::default();
 }
 
 #[inline]
@@ -112,19 +121,12 @@ lazy_static! {
   static ref MODULE_EXPORTS: PersistedSingleThreadVec<ModuleExportsCallback> = Default::default();
 }
 
-thread_local! {
-  static REGISTERED_CLASSES: RefCell<HashMap<
-    /* export name */ String,
-    /* constructor */ sys::napi_ref,
-  >> = Default::default();
-}
-
 #[doc(hidden)]
 pub fn get_class_constructor(js_name: &'static str) -> Option<sys::napi_ref> {
   wait_first_thread_registered();
-  REGISTERED_CLASSES.with(|registered_classes| {
+  REGISTERED_CLASSES.get().and_then(|registered_classes| {
     let classes = registered_classes.borrow();
-    classes.get(js_name).copied()
+    classes.get(js_name).copied().map(|x| x.0)
   })
 }
 
@@ -406,10 +408,9 @@ unsafe extern "C" fn napi_register_module_v1(
           let mut ctor_ref = ptr::null_mut();
           sys::napi_create_reference(env, class_ptr, 1, &mut ctor_ref);
 
-          REGISTERED_CLASSES.with(|registered_classes| {
-            let mut registered_class = registered_classes.borrow_mut();
-            registered_class.insert(js_name.to_string(), ctor_ref);
-          });
+          let registered_classes = REGISTERED_CLASSES.get_or_default();
+          let mut registered_class = registered_classes.borrow_mut();
+          registered_class.insert(js_name.to_string(), NapiRef(ctor_ref));
 
           check_status_or_throw!(
             env,
