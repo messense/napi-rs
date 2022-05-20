@@ -1,0 +1,41 @@
+name: OpenBSD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+env:
+  DEBUG: 'napi:*'
+
+jobs:
+  build-openbsd:
+    name: Build - OpenBSD
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build
+        uses: cross-platform-actions/action@v0.3.1
+        with:
+          environment_variables: DEBUG
+          operating_system: openbsd
+          version: 6.9
+          shell: bash
+          run: |
+            set -ex
+            pkg_add rust node nghttp2
+            doas npm install -g yarn
+
+            echo "~~~~ rustc --version ~~~~"
+            rustc --version
+            echo "~~~~ node -v ~~~~"
+            node -v
+            echo "~~~~ yarn --version ~~~~"
+            yarn --version
+
+            yarn install --immutable --mode=skip-build
+            yarn build
+            cargo test -p napi-sys --lib -- --nocapture
+            yarn build:test
+            yarn test --verbose
