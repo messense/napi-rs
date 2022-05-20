@@ -25,7 +25,7 @@ jobs:
           shell: bash
           run: |
             set -ex
-            pkg_add rust node nghttp2
+            doas pkg_add rust node nghttp2
             doas npm install -g yarn
 
             echo "~~~~ rustc --version ~~~~"
